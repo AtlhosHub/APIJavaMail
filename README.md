@@ -36,7 +36,7 @@ tesseract -v
 
 1. Clone o repositório
 ```bash
-git [colocar URL gir aqui]
+git clone https://github.com/AtlhosHub/APIJavaMail.git
 ```
 
 2. Configure o arquivo `application.properties` em `src/main/resources` com os dados do Gmail:
