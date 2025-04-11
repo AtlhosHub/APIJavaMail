@@ -1,30 +1,27 @@
+// EmailReaderService.java
+
 package com.example.email.service;
 
+import com.example.email.model.PagamentoExtraido;
+import com.google.gson.*;
 import jakarta.mail.*;
 import jakarta.mail.internet.MimeMessage;
-import jakarta.mail.search.AndTerm;
-import jakarta.mail.search.FlagTerm;
-import jakarta.mail.search.OrTerm;
-import jakarta.mail.search.SubjectTerm;
+import jakarta.mail.search.*;
 import net.sourceforge.tess4j.Tesseract;
 import net.sourceforge.tess4j.TesseractException;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.rendering.ImageType;
 import org.apache.pdfbox.rendering.PDFRenderer;
+import org.jetbrains.annotations.NotNull;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.*;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
+import java.io.*;
 import java.util.Properties;
-import java.util.regex.Pattern;
 
 @Service
 public class EmailReaderService {
@@ -43,16 +40,11 @@ public class EmailReaderService {
             Folder inbox = store.getFolder("INBOX");
             inbox.open(Folder.READ_WRITE);
 
-            Flags seen = new Flags(Flags.Flag.SEEN);
-            FlagTerm unseenFlagTerm = new FlagTerm(seen, false);
-
             Message[] messages = inbox.search(new AndTerm(
-                    unseenFlagTerm,
+                    new FlagTerm(new Flags(Flags.Flag.SEEN), false),
                     new OrTerm(
                             new SubjectTerm("Pagamento"),
                             new SubjectTerm("Boleto")
-                            //CONSULTAR EMAILS CADASTRADOS, FAZER UMA QUERY QUE BUSQUE
-                            // O EMAIL DO REMETENTE, E A QUE ALAUNO ELE É ASSOCIADO
                     )
             ));
 
@@ -60,8 +52,6 @@ public class EmailReaderService {
                 Address[] from = message.getFrom();
                 if (from == null || from.length == 0) continue;
                 String remetente = from[0].toString();
-
-                boolean pagamentoIdentificado = false;
 
                 if (message.getContentType().contains("multipart")) {
                     Multipart multipart = (Multipart) message.getContent();
@@ -72,17 +62,17 @@ public class EmailReaderService {
                             File tempFile = salvarAnexoTemporariamente(part);
                             String textoExtraido = realizarOCR(tempFile);
 
-                            if (verificaPagamento(textoExtraido)) {
-                                pagamentoIdentificado = true;
+                            String jsonGemini = enviarParaGemini(textoExtraido);
+                            System.out.println("📦 Resposta do Gemini:\n" + jsonGemini);
+
+                            PagamentoExtraido pagamento = extrairPagamentoDoGemini(jsonGemini);
+                            if (pagamento != null && pagamento.valor != null && pagamento.nome_destinatario != null) {
+                                System.out.println("✅ Pagamento identificado: " + pagamento);
+                                enviarEmailDeConfirmacao(remetente, pagamento.nome_destinatario);
                             }
 
                             if (tempFile.exists()) tempFile.delete();
                         }
-                    }
-
-                    if (pagamentoIdentificado) {
-                        System.out.println("✅ Pagamento identificado no anexo. Enviando confirmação...");
-                        enviarEmailDeConfirmacao(remetente);
                     }
                 }
             }
@@ -94,7 +84,6 @@ public class EmailReaderService {
             e.printStackTrace();
         }
     }
-
 
     private Store conectarEmail() throws Exception {
         Properties props = new Properties();
@@ -139,7 +128,7 @@ public class EmailReaderService {
             return "";
         }
     }
-    //estabeler um periodo onde a caixa de entrada vai ser verificada
+
     private String ocrFromPDF(File pdfFile, Tesseract tesseract) throws IOException, TesseractException {
         PDDocument document = PDDocument.load(pdfFile);
         PDFRenderer pdfRenderer = new PDFRenderer(document);
@@ -147,34 +136,100 @@ public class EmailReaderService {
 
         for (int page = 0; page < document.getNumberOfPages(); page++) {
             BufferedImage image = pdfRenderer.renderImageWithDPI(page, 300, ImageType.RGB);
-
-            String text = tesseract.doOCR(image);
-            fullText.append(text).append("\n");
+            fullText.append(tesseract.doOCR(image)).append("\n");
         }
 
         document.close();
         return fullText.toString();
     }
 
+    private String enviarParaGemini(String ocrText) {
+        try {
+            String apiKey = "AIzaSyCS_Nyk5_7eZE7dceMiZDngNJufOqWtKgI";
 
-    private boolean verificaPagamento(String texto) {
-        texto = texto.replaceAll("\\s+", " ").toUpperCase();
+            String prompt = "Extraia os seguintes campos STRICT JSON (sem markdown, sem texto adicional): "
+                    + "nome_remetente, nome_destinatario, valor(number), data_hora, tipo, banco_origem, banco_destino, codigo_transacao. "
+                    + "Texto para análise:\n" + ocrText;
 
-        boolean contemValor = Pattern.compile("R?\\$?\\s?652[.,\\s]?00").matcher(texto).find();
-        boolean contemBeneficiario = texto.contains("CAUA GOUVEA DO NASCIMENTO");
-        boolean contemPalavraChave = texto.contains("PIX") || texto.contains("ID DA TRANSACAO") || texto.contains("AUTENTICACAO") || texto.contains("COMPROVANTE");
+            JsonObject textPart = new JsonObject();
+            textPart.addProperty("text", prompt);
 
-        return contemValor && contemBeneficiario && contemPalavraChave;
+            JsonArray parts = new JsonArray();
+            parts.add(textPart);
+
+            JsonObject content = new JsonObject();
+            content.add("parts", parts);
+
+            JsonArray contents = new JsonArray();
+            contents.add(content);
+
+            JsonObject requestBody = new JsonObject();
+            requestBody.add("contents", contents);
+
+            okhttp3.OkHttpClient client = new okhttp3.OkHttpClient();
+            okhttp3.Request request = new okhttp3.Request.Builder()
+                    .url("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + apiKey)
+                    .post(okhttp3.RequestBody.create(
+                            requestBody.toString(),
+                            okhttp3.MediaType.parse("application/json")
+                    ))
+                    .build();
+
+            try (okhttp3.Response response = client.newCall(request).execute()) {
+                if (!response.isSuccessful()) {
+                    throw new IOException("Erro Gemini: " + response.code() + " - " + response.body().string());
+                }
+                return response.body().string();
+            }
+
+        } catch (Exception e) {
+            System.err.println("❌ Erro ao chamar Gemini:");
+            e.printStackTrace();
+            return null;
+        }
     }
 
-    private void enviarEmailDeConfirmacao(String destinatario) {
+    private PagamentoExtraido extrairPagamentoDoGemini(String respostaGemini) {
+        try {
+            JsonObject respostaCompleta = JsonParser.parseString(respostaGemini).getAsJsonObject();
+
+            String textoCrudo = respostaCompleta
+                    .getAsJsonArray("candidates")
+                    .get(0).getAsJsonObject()
+                    .getAsJsonObject("content")
+                    .getAsJsonArray("parts")
+                    .get(0).getAsJsonObject()
+                    .get("text").getAsString();
+
+            String jsonLimpo = textoCrudo
+                    .replaceAll("```json", "")
+                    .replaceAll("```", "")
+                    .replaceAll("JSON", "")
+                    .trim();
+
+            if (!jsonLimpo.startsWith("{") || !jsonLimpo.endsWith("}")) {
+                throw new IllegalArgumentException("Resposta não contém JSON válido");
+            }
+            System.out.println("JSON processado: " + jsonLimpo);
+
+            return new Gson().fromJson(jsonLimpo, PagamentoExtraido.class);
+
+        } catch (Exception e) {
+            System.err.println("❌ Erro crítico ao processar resposta do Gemini:");
+            System.err.println("Resposta original: " + respostaGemini);
+            e.printStackTrace();
+            return null;
+        }
+    }
+
+    private void enviarEmailDeConfirmacao(String destinatario, String nome) {
         try {
             MimeMessage message = mailSender.createMimeMessage();
             MimeMessageHelper helper = new MimeMessageHelper(message, false, "utf-8");
 
             helper.setTo(destinatario);
             helper.setSubject("Confirmação de Pagamento");
-            helper.setText("Olá! O pagamento foi recebido com sucesso. Obrigado!", true);
+            helper.setText("Olá! O pagamento em nome de " + nome + " foi recebido com sucesso. Obrigado!", true);
             helper.setFrom(EMAIL);
 
             mailSender.send(message);
