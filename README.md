@@ -1,96 +1,116 @@
-# 📨 Email OCR Payment Validator
+# 🤖 Leitor de Emails com Integração Gemini AI (Comprovantes de Pagamento)
 
-Este projeto é um serviço Spring Boot que automatiza a leitura de emails com comprovantes de pagamento anexados (PDF, JPG, PNG) e realiza OCR (Reconhecimento Óptico de Caracteres) para identificar valores pagos e remetentes. O objetivo é auxiliar o controle de mensalidades de um clube de tênis de mesa.
+Este projeto Java + Spring Boot tem como objetivo automatizar a leitura de comprovantes de pagamento enviados por email (ex: PIX, boletos, TED) e extrair as informações através de OCR ou inteligência artificial. A extração e interpretação dos dados é feita com a ajuda da API Gemini (Google AI).
 
----
+## 📌 Funcionalidades
 
-## ⚙️ Pré-requisitos
+- Acessa automaticamente a caixa de entrada via IMAP
+- Lê apenas emails não lidos com assunto "Pagamento" ou "Boleto"
+- Extrai imagens ou PDFs anexados
+- Envia o anexo diretamente à API do Gemini para interpretação
+- Retorna um JSON com:
+  - nome_remetente
+  - nome_destinatario
+  - valor
+  - data_hora
+  - tipo
+  - banco_origem
+  - banco_destino
+  - codigo_transacao
+- Envia um email de confirmação ao remetente
 
-### 1. Java
-- Java 21 instalado
-- Variável de ambiente `JAVA_HOME` configurada
-- Você provavelmente já tem isso :) 
-### 2. Maven
-- Maven 3.8+ instalado e disponível no terminal
-- Você também já tem isso!!
+## ⚙️ Requisitos
 
-### 3. Tesseract OCR
+- Java 17+
+- Spring Boot
+- Maven
+- Conta Gmail habilitada para IMAP
+- Conta Google com acesso à API Gemini (plano gratuito disponível)
 
-#### Windows
-- Baixe o instalador do Tesseract:
-  [https://github.com/tesseract-ocr/tesseract/releases](https://github.com/tesseract-ocr/tesseract/releases)
-- Instale o Tesseract em: `C:/Program Files/Tesseract-OCR`
-- Verifique se o diretório `tessdata` existe dentro dessa pasta
-- Configure a variável de ambiente:
-  - Nome: `TESSDATA_PREFIX`
-  - Valor: `C:/Program Files/Tesseract-OCR`
+## 🔧 Configuração do Ambiente
 
-#### Teste a instalação:
-```bash
-tesseract -v
-```
-
----
-
-## 🚀 Rodando o projeto
-
-1. Clone o repositório
+### 1. Clone o projeto
 ```bash
 git clone https://github.com/AtlhosHub/APIJavaMail.git
+cd APIJavaMail
 ```
 
-2. Configure o arquivo `application.properties` em `src/main/resources` com os dados do Gmail:
+### 2. Baixe e configure o Tesseract OCR (caso queira usar fallback por texto)
 
-```
-spring.mail.host=smtp.gmail.com
-spring.mail.port=587
-spring.mail.username=seu-email@gmail.com
-spring.mail.password=sua-senha-de-app
-spring.mail.protocol=smtp
-spring.mail.properties.mail.smtp.auth=true
-spring.mail.properties.mail.smtp.starttls.enable=true
-spring.mail.properties.mail.smtp.starttls.required=true
-spring.mail.default-encoding=UTF-8
+- Download: https://github.com/tesseract-ocr/tesseract
+- Instale e copie o caminho para o diretório de dados `tessdata`.
+- Altere no código, se estiver usando o modo OCR:
+```java
+tesseract.setDatapath("C:/Program Files/Tesseract-OCR/tessdata");
 ```
 
-> ⚠️ Use uma **senha de aplicativo** do Gmail. [Como gerar](https://support.google.com/mail/answer/185833?hl=pt-BR)
+### 3. Gere e configure sua API KEY Gemini
 
-3. Compile e rode a aplicação:
-```bash
+- Documentação oficial: https://ai.google.dev/gemini-api/docs
+- Crie um projeto no [Google Cloud Console](https://console.cloud.google.com)
+- Ative a API **Generative Language API**
+- Gere uma chave de API
+- Substitua no código (ex: `enviarParaGemini(...)`):
+```java
+String apiKey = "SUA_CHAVE_AQUI";
+```
+
+### 4. Configuração do Email
+
+Edite a classe `EmailReaderService.java` com suas credenciais:
+```java
+private static final String EMAIL = "seuemail@gmail.com";
+private static final String PASSWORD = "sua_senha_de_aplicativo";
+```
+> Use senhas de aplicativo do Gmail para maior segurança.
+
+### 5. Dependências Maven (Já inclusas no projeto)
+- Spring Boot Starter Mail
+- Tesseract Tess4J
+- PDFBox
+- GSON
+- OkHttp3 (para chamadas à API Gemini)
+
+## 🧪 Teste Local
+- Envie um email para o seu próprio Gmail com assunto "Pagamento"
+- Anexe um PDF ou imagem de comprovante
+- Veja no console a resposta JSON retornada
+- Verifique se o email de confirmação foi enviado de volta ao remetente
+
+## 🧠 Prompt Gemini utilizado
+```text
+Você receberá a imagem de um comprovante de pagamento.
+Extraia e retorne **somente um JSON puro**, sem explicações ou marcações.
+
+Campos esperados:
+- nome_remetente
+- nome_destinatario
+- valor
+- data_hora
+- tipo
+- banco_origem
+- banco_destino
+- codigo_transacao
+
+Se algum campo não estiver claro, use null. Leia a imagem com atenção. Responda apenas o JSON.
+```
+
+## 📂 Exemplo de JSON gerado
+```json
+{
+  "nome_remetente": "Bianca Borges de Souza",
+  "nome_destinatario": "Rosilene Bispo Vieira",
+  "valor": "R$ 652,00",
+  "data_hora": "09/04/2025, 08:21",
+  "tipo": "PIX",
+  "banco_origem": "Mercado Pago",
+  "banco_destino": "Nu Pagamentos S.A.",
+  "codigo_transacao": "E10573521202504091121quToRolYbND"
+}
 ```
 
 ---
 
-## 📩 Como funciona
+## ✨ Autor
+Desenvolvido por Thomas :).
 
-- A cada 5 minutos, o sistema acessa a caixa de entrada do Gmail
-- Procura por emails **não lidos** com o assunto `"Pagamento"` ou `"Boleto"`
-- Lê os anexos, extrai o texto via OCR e verifica se:
-  - Existe um valor esperado (ex: R$ 120,00 ou múltiplos)
-  - O nome do pagador está presente
-- Se tudo for validado, o sistema envia uma **confirmação automática por email**
-
----
-
-## ✨ Futuras melhorias
-
-- Integração com banco de dados de alunos
-- Painel administrativo com histórico de pagamentos
-- Processamento de múltiplos boletos/mensalidades
-- Detecção automática de períodos atrasados
-
----
-
-## 🧠 Tecnologias
-
-- Java 21
-- Spring Boot 3.4.x
-- Jakarta Mail (JavaMail)
-- Apache PDFBox
-- Tess4J (wrapper Java para Tesseract OCR)
-
----
-
-## 👤 Autor
-
-Feito com ☕ e 💻 por Thomas, yay

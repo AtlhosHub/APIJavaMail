@@ -1,5 +1,3 @@
-// EmailReaderService.java
-
 package com.example.email.service;
 
 import com.example.email.model.PagamentoExtraido;
@@ -7,12 +5,9 @@ import com.google.gson.*;
 import jakarta.mail.*;
 import jakarta.mail.internet.MimeMessage;
 import jakarta.mail.search.*;
-import net.sourceforge.tess4j.Tesseract;
-import net.sourceforge.tess4j.TesseractException;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.rendering.ImageType;
 import org.apache.pdfbox.rendering.PDFRenderer;
-import org.jetbrains.annotations.NotNull;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.mail.javamail.*;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -21,6 +16,7 @@ import org.springframework.stereotype.Service;
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.*;
+import java.util.Base64;
 import java.util.Properties;
 
 @Service
@@ -32,9 +28,9 @@ public class EmailReaderService {
     @Autowired
     private JavaMailSender mailSender;
 
-    @Scheduled(fixedDelay = 300000)
+    @Scheduled(fixedDelay = 60000)
     public void verificarEmails() {
-        System.out.println("🔄 Verificando emails às " + java.time.LocalDateTime.now());
+        System.out.println("\uD83D\uDD04 Verificando emails às " + java.time.LocalDateTime.now());
         try {
             Store store = conectarEmail();
             Folder inbox = store.getFolder("INBOX");
@@ -60,14 +56,14 @@ public class EmailReaderService {
                         BodyPart part = multipart.getBodyPart(i);
                         if (Part.ATTACHMENT.equalsIgnoreCase(part.getDisposition())) {
                             File tempFile = salvarAnexoTemporariamente(part);
-                            String textoExtraido = realizarOCR(tempFile);
 
-                            String jsonGemini = enviarParaGemini(textoExtraido);
-                            System.out.println("📦 Resposta do Gemini:\n" + jsonGemini);
+                            String jsonGemini = enviarImagemParaGemini(tempFile);
+                            System.out.println("\uD83D\uDCE6 Imagem analisada pela Gemini\nResposta:");
+                            System.out.println(jsonGemini);
 
                             PagamentoExtraido pagamento = extrairPagamentoDoGemini(jsonGemini);
                             if (pagamento != null && pagamento.valor != null && pagamento.nome_destinatario != null) {
-                                System.out.println("✅ Pagamento identificado: " + pagamento);
+                                System.out.println("\u2705 Pagamento identificado: " + pagamento);
                                 enviarEmailDeConfirmacao(remetente, pagamento.nome_destinatario);
                             }
 
@@ -80,7 +76,7 @@ public class EmailReaderService {
             inbox.close(false);
             store.close();
         } catch (Exception e) {
-            System.err.println("❌ Erro ao verificar emails:");
+            System.err.println("\u274C Erro ao verificar emails:");
             e.printStackTrace();
         }
     }
@@ -108,53 +104,45 @@ public class EmailReaderService {
         return file;
     }
 
-    private String realizarOCR(File file) {
-        try {
-            Tesseract tesseract = new Tesseract();
-            tesseract.setDatapath("C:/Program Files/Tesseract-OCR/tessdata");
-            tesseract.setLanguage("eng");
-
-            String fileName = file.getName().toLowerCase();
-            if (fileName.endsWith(".pdf")) {
-                return ocrFromPDF(file, tesseract);
-            } else {
-                BufferedImage image = ImageIO.read(file);
-                return tesseract.doOCR(image);
-            }
-
-        } catch (Exception e) {
-            System.err.println("Erro no OCR:");
-            e.printStackTrace();
-            return "";
-        }
-    }
-
-    private String ocrFromPDF(File pdfFile, Tesseract tesseract) throws IOException, TesseractException {
-        PDDocument document = PDDocument.load(pdfFile);
-        PDFRenderer pdfRenderer = new PDFRenderer(document);
-        StringBuilder fullText = new StringBuilder();
-
-        for (int page = 0; page < document.getNumberOfPages(); page++) {
-            BufferedImage image = pdfRenderer.renderImageWithDPI(page, 300, ImageType.RGB);
-            fullText.append(tesseract.doOCR(image)).append("\n");
-        }
-
-        document.close();
-        return fullText.toString();
-    }
-
-    private String enviarParaGemini(String ocrText) {
+    private String enviarImagemParaGemini(File file) {
         try {
             String apiKey = "AIzaSyCS_Nyk5_7eZE7dceMiZDngNJufOqWtKgI";
+            String mimeType = file.getName().endsWith(".pdf") ? "image/png" : "image/png";
 
-            String prompt = "Extraia os seguintes campos STRICT JSON (sem markdown, sem texto adicional): "
-                    + "nome_remetente, nome_destinatario, valor(number), data_hora, tipo, banco_origem, banco_destino, codigo_transacao. "
-                    + "Texto para análise:\n" + ocrText;
+            // Se PDF, converter para imagem primeiro
+            if (file.getName().toLowerCase().endsWith(".pdf")) {
+                file = converterPdfParaImagem(file);
+            }
+
+            byte[] imageBytes = java.nio.file.Files.readAllBytes(file.toPath());
+            String base64Image = Base64.getEncoder().encodeToString(imageBytes);
+
+            JsonObject inlineData = new JsonObject();
+            inlineData.addProperty("mimeType", mimeType);
+            inlineData.addProperty("data", base64Image);
+
+            JsonObject imagePart = new JsonObject();
+            imagePart.add("inlineData", inlineData);
 
             JsonObject textPart = new JsonObject();
-            textPart.addProperty("text", prompt);
+            textPart.addProperty("text", "Você receberá a imagem de um comprovante de pagamento.\n" +
+                    "Extraia e retorne somente um JSON puro, sem explicações, marcações ou formatação adicional.\n\n" +
+                    "O JSON deve conter os seguintes campos:\n" +
+                    "- nome_remetente: nome de quem enviou o pagamento.\n" +
+                    "- nome_destinatario: nome de quem recebeu o pagamento.\n" +
+                    "- valor: valor da transação, como número ou string (ex: \"R$ 120,00\").\n" +
+                    "- data_hora: data e horário do pagamento.\n" +
+                    "- tipo: tipo da transação (PIX, TED, DOC, boleto, etc).\n" +
+                    "- banco_origem: banco de onde saiu o dinheiro.\n" +
+                    "- banco_destino: banco que recebeu o dinheiro (pode estar próximo ao nome do destinatário).\n" +
+                    "- codigo_transacao: código de autenticação ou ID da transação.\n\n" +
+                    "Se algum campo não estiver claramente presente, use null.\n\n" +
+                    "Lembre-se:\n" +
+                    "- Os campos podem estar com nomes diferentes (ex: \"De\", \"Para\", \"Data da operação\").\n" +
+                    "- Não inclua texto explicativo, apenas o JSON puro.");
 
             JsonArray parts = new JsonArray();
+            parts.add(imagePart);
             parts.add(textPart);
 
             JsonObject content = new JsonObject();
@@ -169,10 +157,7 @@ public class EmailReaderService {
             okhttp3.OkHttpClient client = new okhttp3.OkHttpClient();
             okhttp3.Request request = new okhttp3.Request.Builder()
                     .url("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + apiKey)
-                    .post(okhttp3.RequestBody.create(
-                            requestBody.toString(),
-                            okhttp3.MediaType.parse("application/json")
-                    ))
+                    .post(okhttp3.RequestBody.create(requestBody.toString(), okhttp3.MediaType.parse("application/json")))
                     .build();
 
             try (okhttp3.Response response = client.newCall(request).execute()) {
@@ -181,12 +166,21 @@ public class EmailReaderService {
                 }
                 return response.body().string();
             }
-
         } catch (Exception e) {
-            System.err.println("❌ Erro ao chamar Gemini:");
+            System.err.println("\u274C Erro ao enviar imagem para Gemini:");
             e.printStackTrace();
             return null;
         }
+    }
+
+    private File converterPdfParaImagem(File pdfFile) throws IOException {
+        PDDocument document = PDDocument.load(pdfFile);
+        PDFRenderer pdfRenderer = new PDFRenderer(document);
+        BufferedImage image = pdfRenderer.renderImageWithDPI(0, 300, ImageType.RGB);
+        File imageFile = new File("converted_temp.png");
+        ImageIO.write(image, "png", imageFile);
+        document.close();
+        return imageFile;
     }
 
     private PagamentoExtraido extrairPagamentoDoGemini(String respostaGemini) {
@@ -204,7 +198,6 @@ public class EmailReaderService {
             String jsonLimpo = textoCrudo
                     .replaceAll("```json", "")
                     .replaceAll("```", "")
-                    .replaceAll("JSON", "")
                     .trim();
 
             if (!jsonLimpo.startsWith("{") || !jsonLimpo.endsWith("}")) {
@@ -215,7 +208,7 @@ public class EmailReaderService {
             return new Gson().fromJson(jsonLimpo, PagamentoExtraido.class);
 
         } catch (Exception e) {
-            System.err.println("❌ Erro crítico ao processar resposta do Gemini:");
+            System.err.println("\u274C Erro crítico ao processar resposta do Gemini:");
             System.err.println("Resposta original: " + respostaGemini);
             e.printStackTrace();
             return null;
@@ -233,9 +226,9 @@ public class EmailReaderService {
             helper.setFrom(EMAIL);
 
             mailSender.send(message);
-            System.out.println("📨 Email de confirmação enviado para: " + destinatario);
+            System.out.println("\uD83D\uDCE8 Email de confirmação enviado para: " + destinatario);
         } catch (Exception e) {
-            System.err.println("❌ Erro ao enviar email de confirmação:");
+            System.err.println("\u274C Erro ao enviar email de confirmação:");
             e.printStackTrace();
         }
     }
